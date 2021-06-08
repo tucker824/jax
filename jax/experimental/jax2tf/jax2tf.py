@@ -2016,7 +2016,7 @@ def _threefry2x32_jax_impl(*args: TfVal, _in_avals, _out_aval):
   return res
 
 
-tf_impl_with_avals[jax.random.threefry2x32_p] = _threefry2x32_jax_impl
+tf_impl_with_avals[jax.prng.threefry2x32_p] = _threefry2x32_jax_impl
 
 # Use the vmap implementation, otherwise on TPU the performance is really bad
 # With use_vmap=True on, we get about the same performance for JAX and jax2tf.
