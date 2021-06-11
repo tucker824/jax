@@ -767,7 +767,8 @@ def xla_computation(fun: Callable,
 
 def grad(fun: Callable, argnums: Union[int, Sequence[int]] = 0,
          has_aux: bool = False, holomorphic: bool = False,
-         allow_int: bool = False) -> Callable:
+         allow_int: bool = False,
+         reduce_axes: Sequence[AxisName] = ()) -> Callable:
   """Creates a function which evaluates the gradient of ``fun``.
 
   Args:
@@ -806,7 +807,8 @@ def grad(fun: Callable, argnums: Union[int, Sequence[int]] = 0,
   """
   value_and_grad_f = value_and_grad(fun, argnums, has_aux=has_aux,
                                     holomorphic=holomorphic,
-                                    allow_int=allow_int)
+                                    allow_int=allow_int,
+                                    reduce_axes=reduce_axes)
 
   docstr = ("Gradient of {fun} with respect to positional argument(s) "
             "{argnums}. Takes the same arguments as {fun} but returns the "
@@ -829,7 +831,8 @@ def grad(fun: Callable, argnums: Union[int, Sequence[int]] = 0,
 
 def value_and_grad(fun: Callable, argnums: Union[int, Sequence[int]] = 0,
                    has_aux: bool = False, holomorphic: bool = False,
-                   allow_int: bool = False) -> Callable[..., Tuple[Any, Any]]:
+                   allow_int: bool = False, reduce_axes: Sequence[AxisName] = ()
+) -> Callable[..., Tuple[Any, Any]]:
   """Create a function which evaluates both ``fun`` and the gradient of ``fun``.
 
   Args:
@@ -879,9 +882,10 @@ def value_and_grad(fun: Callable, argnums: Union[int, Sequence[int]] = 0,
     f_partial, dyn_args = argnums_partial(f, argnums, args)
     tree_map(partial(_check_input_dtype_grad, holomorphic, allow_int), dyn_args)
     if not has_aux:
-      ans, vjp_py = _vjp(f_partial, *dyn_args)
+      ans, vjp_py = _vjp(f_partial, *dyn_args, reduce_axes=reduce_axes)
     else:
-      ans, vjp_py, aux = _vjp(f_partial, *dyn_args, has_aux=True)
+      ans, vjp_py, aux = _vjp(
+          f_partial, *dyn_args, has_aux=True, reduce_axes=reduce_axes)
     _check_scalar(ans)
     dtype = dtypes.result_type(ans)
     tree_map(partial(_check_output_dtype_grad, holomorphic), ans)
@@ -1888,12 +1892,14 @@ if sys.version_info >= (3, 8):
   @overload  # type: ignore
   def vjp(fun: Callable[..., T],
           *primals: Any,
-          has_aux: Literal[False] = False) -> Tuple[T, Callable]:
+          has_aux: Literal[False] = False,
+          reduce_axes: Tuple[AxisName] = ()) -> Tuple[T, Callable]:
     ...
 
   @overload
   def vjp(fun: Callable[..., Tuple[T, U]], *primals: Any,
-          has_aux: Literal[True]) -> Tuple[T, Callable, U]:
+          has_aux: Literal[True],
+          reduce_axes: Tuple[AxisName] = ()) -> Tuple[T, Callable, U]:
     ...
 else:
 
@@ -1904,12 +1910,14 @@ else:
   @overload
   def vjp(
       fun: Callable[..., Any], *primals: Any,
-      has_aux: bool) -> Union[Tuple[Any, Callable], Tuple[Any, Callable, Any]]:
+      has_aux: bool,
+      reduce_axes: Sequence[AxisName] = ()
+  ) -> Union[Tuple[Any, Callable], Tuple[Any, Callable, Any]]:
     ...
 
 
 def vjp(  # type: ignore
-    fun: Callable, *primals, has_aux: bool = False,
+    fun: Callable, *primals, has_aux: bool = False, reduce_axes=()
 ) -> Union[Tuple[Any, Callable], Tuple[Any, Callable, Any]]:
   """Compute a (reverse-mode) vector-Jacobian product of ``fun``.
 
@@ -1950,19 +1958,22 @@ def vjp(  # type: ignore
   -0.2524413
   """
   _check_callable(fun)
-  return _vjp(lu.wrap_init(fun), *primals, has_aux=has_aux)
+  return _vjp(
+      lu.wrap_init(fun), *primals, has_aux=has_aux, reduce_axes=reduce_axes)
 
-def _vjp(fun: lu.WrappedFun, *primals, has_aux=False):
+def _vjp(fun: lu.WrappedFun, *primals, has_aux=False, reduce_axes=()):
   """Variant of vjp() that takes an lu.WrappedFun."""
   primals_flat, in_tree = tree_flatten(primals)
   for arg in primals_flat: _check_arg(arg)
   if not has_aux:
     flat_fun, out_tree = flatten_fun_nokwargs(fun, in_tree)
-    out_primal, out_vjp = ad.vjp(flat_fun, primals_flat)
+    out_primal, out_vjp = ad.vjp(
+        flat_fun, primals_flat, reduce_axes=reduce_axes)
     out_tree = out_tree()
   else:
     flat_fun, out_aux_trees = flatten_fun_nokwargs2(fun, in_tree)
-    out_primal, out_vjp, aux = ad.vjp(flat_fun, primals_flat, has_aux=True)
+    out_primal, out_vjp, aux = ad.vjp(
+        flat_fun, primals_flat, has_aux=True, reduce_axes=reduce_axes)
     out_tree, aux_tree = out_aux_trees()
   out_primal_py = tree_unflatten(out_tree, out_primal)
   ct_dtypes = [core.primal_dtype_to_tangent_dtype(_dtype(x)) for x in out_primal]
@@ -1978,7 +1989,7 @@ def _vjp(fun: lu.WrappedFun, *primals, has_aux=False):
     return out_primal_py, vjp_py, tree_unflatten(aux_tree, aux)
 
 
-def linear_transpose(fun: Callable, *primals) -> Callable:
+def linear_transpose(fun: Callable, *primals, reduce_axes=()) -> Callable:
   """Transpose a function that is promised to be linear.
 
   For linear functions, this transformation is equivalent to ``vjp``, but
@@ -2043,7 +2054,7 @@ def linear_transpose(fun: Callable, *primals) -> Callable:
     dummies = [ad.UndefinedPrimal(a) for a in in_avals]
     in_cotangents = map(
         ad.instantiate_zeros,
-        ad.backward_pass(jaxpr, consts, dummies, out_cotangents))
+        ad.backward_pass(jaxpr, reduce_axes, consts, dummies, out_cotangents))
     return tree_unflatten(in_tree, in_cotangents)
 
   return transposed_fun

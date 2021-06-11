@@ -683,12 +683,15 @@ def _psum_transpose_rule(cts, *args, axes, axis_index_groups):
       return lax._reduce_sum_transpose_rule(ct, arg, axes=pos_axes)[0]
     cts = map(broadcast_positional, cts, args)
 
-  # We treat psum as psum + pbroadcast, which is why the transpose reduces
-  # over the named axes again (unlike for positional axes).
-  nonzero_out_cts, treedef = tree_util.tree_flatten(cts)
-  nonzero_in_cts = psum_p.bind(*nonzero_out_cts, axes=named_axes,
-                               axis_index_groups=axis_index_groups)
-  return tree_util.tree_unflatten(treedef, nonzero_in_cts)
+  if axis_index_groups is not None:
+    # We treat psum with nontrivial axis_index_groups as psum + pbroadcast,
+    # so the transpose reduces over the named axes again (unlike for positional
+    # axes or plain psum).
+    nonzero_out_cts, treedef = tree_util.tree_flatten(cts)
+    nonzero_in_cts = psum_p.bind(*nonzero_out_cts, axes=named_axes,
+                                 axis_index_groups=axis_index_groups)
+    cts = tree_util.tree_unflatten(treedef, nonzero_in_cts)
+  return cts
 
 psum_p = core.AxisPrimitive('psum')
 psum_p.multiple_results = True
